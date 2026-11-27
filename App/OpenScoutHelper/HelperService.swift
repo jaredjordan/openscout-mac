@@ -56,7 +56,10 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         timer.setEventHandler { [weak self] in self?.tick() }
         timer.resume()
         self.timer = timer
-        work.async { [weak self] in self?.lastPosture = self?.posture.runAll() ?? [] }
+        work.async { [weak self] in
+            self?.lastPosture = self?.posture.runAll() ?? []
+            self?.selfTestEngine()
+        }
     }
 
     /// Every 15 minutes: definitions, then scheduled scans.
@@ -75,6 +78,20 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
             runScan(.full, userStarted: false)
         }
         lastPosture = posture.runAll()
+        selfTestEngine()
+    }
+
+    /// Checks that clamscan runs and identifies itself. A stub that exits 0 without the
+    /// ClamAV banner fails this. It can't stop a determined same-user attacker (see ADR 0002
+    /// and issue #40), but it catches broken or replaced installs.
+    private func selfTestEngine() {
+        guard let clam = Paths.tool("clamscan") else {
+            store.update { $0.engineSelfTestPassed = false }
+            return
+        }
+        let result = ProcessCommandRunner().run(clam, ["--version"], timeout: 20)
+        let passed = result.exitCode == 0 && result.stdout.hasPrefix("ClamAV ")
+        store.update { $0.engineSelfTestPassed = passed }
     }
 
     // MARK: Startup items
@@ -121,7 +138,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         guard !files.isEmpty else { return }
         let report = scanService().scan(paths: files)
         report.findings.forEach(record)
-        store.update { $0.lastScanProblems = report.engineErrors }
+        store.update { $0.downloadProblems = report.engineErrors }
         report.engineErrors.forEach { store.log("Scan problem: \($0)") }
         if report.isClean {
             for file in files where !report.skipped.contains(file) {
@@ -272,9 +289,12 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
             try definitions.install(manifest: DefinitionManifest(source: "clamav", version: version, files: files),
                                     from: download, currentlyFlagged: currentlyFlagged) { staged in
                 // Scan inside every app bundle with the candidate set. Anything new it flags holds the update.
+                // Unreadable files in an app don't block the update. Only new detections do.
                 let check = ClamAVEngine(clamscanPath: clamscan, databaseDirectory: staged.path, timeout: 3600)
                     .scan(paths: corpus, recursive: true)
-                if !check.errors.isEmpty { throw EngineError.failed(tool: "clamscan", exitCode: 2, stderr: check.errors.joined(separator: "; ")) }
+                if !check.errors.isEmpty {
+                    self.store.log("Definitions check against installed apps had \(check.errors.count) problems")
+                }
                 return Set(check.matches.map(\.path))
             }
             store.update {
@@ -298,12 +318,13 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         let paused = scanPaused
         control.unlock()
         let fda = FullDiskAccessProbe.hasAccess(home: Paths.home)
-        let haveEngine = Paths.tool("clamscan") != nil
-            && FileManager.default.fileExists(atPath: definitions.currentDirectory(source: "clamav").path)
+        let haveDefinitions = FileManager.default.fileExists(atPath: definitions.currentDirectory(source: "clamav").path)
         return store.read { state in
+            let haveEngine = haveDefinitions && state.engineSelfTestPassed
+            let problems = haveEngine ? state.lastScanProblems + state.downloadProblems : [ScanService.noEnginesError]
             let inputs = ProtectionInputs(fullDiskAccess: fda, helperRunning: true, openFindings: state.findings.count,
                                           scanProgress: progress, lastDefinitionsUpdate: state.lastDefinitionsUpdate,
-                                          enginesHealthy: haveEngine && state.lastScanProblems.isEmpty)
+                                          enginesHealthy: problems.isEmpty)
             let mark = ProtectionState.mark(for: inputs, now: Date())
             return HelperStatus(mark: mark,
                                 accessibilityLabel: ProtectionState.accessibilityLabel(for: mark, inputs: inputs),
@@ -314,7 +335,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
                                 startupItems: state.startupBaseline, posture: lastPosture,
                                 recentActivity: Array(state.activity.suffix(20).reversed()),
                                 settings: state.settings,
-                                problems: haveEngine ? state.lastScanProblems : [ScanService.noEnginesError])
+                                problems: problems)
         }
     }
 
@@ -351,8 +372,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         do {
             if finding.evidence.engine == .startupWatcher,
                let item = try? StartupItemParser.parse(plistAt: URL(fileURLWithPath: finding.evidence.path)) {
-                // Stop the job first. Moving the plist alone leaves it running until logout.
-                _ = ProcessCommandRunner().run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(item.label)"], timeout: 15)
+                stopJobIfItOwns(plistPath: finding.evidence.path, label: item.label)
             }
             try quarantineStore.quarantine(fileAt: URL(fileURLWithPath: finding.evidence.path), finding: finding)
             store.update {
@@ -383,6 +403,20 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         } catch {
             reply("Couldn't save: \(error)")
         }
+    }
+
+    /// Stops a startup job before its plist is quarantined, but only when the loaded job with
+    /// that label really comes from this plist. A hostile plist can claim any label, including
+    /// OpenScout's own or another security tool's.
+    private func stopJobIfItOwns(plistPath: String, label: String) {
+        guard !label.hasPrefix("com.jaredjordan.openscout") else { return }
+        let target = "gui/\(getuid())/\(label)"
+        let printed = ProcessCommandRunner().run("/bin/launchctl", ["print", target], timeout: 15)
+        guard printed.exitCode == 0,
+              printed.stdout.split(whereSeparator: \.isNewline).contains(where: {
+                  $0.trimmingCharacters(in: .whitespaces) == "path = \(plistPath)"
+              }) else { return }
+        _ = ProcessCommandRunner().run("/bin/launchctl", ["bootout", target], timeout: 15)
     }
 
     func quarantineRecords(reply: @escaping (Data?, String?) -> Void) {

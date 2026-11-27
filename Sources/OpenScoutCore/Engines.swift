@@ -85,6 +85,21 @@ public struct ClamAVEngine: ScanEngine {
 
     public func scan(paths: [String], recursive: Bool) -> EngineScanResult {
         guard !paths.isEmpty else { return EngineScanResult() }
+        // A path with a newline can forge output lines for its neighbors, so each one is
+        // scanned alone and any detection is attributed to it directly.
+        let unsafe = paths.filter { $0.contains("\n") || $0.contains("\r") }
+        let normal = paths.filter { !unsafe.contains($0) }
+        var out = normal.isEmpty ? EngineScanResult() : scanBatch(normal, recursive: recursive)
+        for path in unsafe {
+            let single = scanSingleUnsafe(path)
+            out.matches += single.matches
+            out.errors += single.errors
+            out.skipped += single.skipped
+        }
+        return out
+    }
+
+    private func scanBatch(_ paths: [String], recursive: Bool) -> EngineScanResult {
         let args = Self.arguments(databaseDirectory: databaseDirectory, recursive: recursive, paths: paths)
         let result = runner.run(clamscanPath, args, timeout: timeout)
         if result.timedOut { return EngineScanResult(errors: ["clamscan timed out"]) }
@@ -103,9 +118,61 @@ public struct ClamAVEngine: ScanEngine {
         case 1:
             if parsed.isEmpty { out.errors.append("clamscan reported a detection OpenScout couldn't match to a file") }
         default:
-            out.errors.append("clamscan exited \(result.exitCode): \(result.stderr.prefix(300))")
+            // Files that vanished or can't be read are routine in Downloads and home folders.
+            // They're listed as skipped. Anything else is a real engine failure.
+            let (unreadable, other) = Self.classifyProblems(result.stdout + "\n" + result.stderr,
+                                                            inputs: inputs, recursive: recursive)
+            out.skipped += unreadable
+            if !other.isEmpty || unreadable.isEmpty {
+                out.errors.append("clamscan exited \(result.exitCode): \(other.joined(separator: "; ").prefix(300))")
+            }
         }
         return out
+    }
+
+    private func scanSingleUnsafe(_ path: String) -> EngineScanResult {
+        let args = Self.arguments(databaseDirectory: databaseDirectory, recursive: false, paths: [path])
+        let result = runner.run(clamscanPath, args, timeout: timeout)
+        if result.timedOut { return EngineScanResult(errors: ["clamscan timed out"]) }
+        switch result.exitCode {
+        case 0:
+            return EngineScanResult()
+        case 1:
+            // One input, so any detection belongs to it. The signature is on the last FOUND line.
+            let last = result.stdout.split(whereSeparator: \.isNewline).last { $0.hasSuffix(" FOUND") }
+            let signature = last.flatMap { line -> String? in
+                guard let colon = line.range(of: ": ", options: .backwards) else { return nil }
+                return String(line[colon.upperBound...].dropLast(" FOUND".count))
+            } ?? "Unknown"
+            if signature.hasPrefix(Self.limitsPrefix) { return EngineScanResult(skipped: [path]) }
+            return EngineScanResult(matches: [EngineMatch(engine: .clamAV, path: path, ruleID: signature,
+                                                          detail: "ClamAV signature \(signature)")])
+        default:
+            return EngineScanResult(errors: ["clamscan exited \(result.exitCode) on a file with a newline in its name"])
+        }
+    }
+
+    static let unreadableMarkers = ["Access denied", "Permission denied", "No such file or directory",
+                                    "Can't open file or directory", "Can't access file"]
+
+    /// Splits clamscan's problem lines into per-file read problems (skipped) and everything else.
+    public static func classifyProblems(_ output: String, inputs: Set<String>, recursive: Bool) -> (unreadable: [String], other: [String]) {
+        var unreadable: [String] = []
+        var other: [String] = []
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasSuffix(" FOUND"), !line.hasSuffix(": OK") else { continue }
+            if unreadableMarkers.contains(where: { line.contains($0) }) {
+                var body = line
+                if body.hasPrefix("WARNING: ") { body.removeFirst("WARNING: ".count) }
+                if let colon = body.range(of: ": "), isWithin(String(body[..<colon.lowerBound]), inputs: inputs, recursive: recursive) {
+                    unreadable.append(String(body[..<colon.lowerBound]))
+                    continue
+                }
+            }
+            other.append(line)
+        }
+        return (unreadable, other)
     }
 
     /// Lines look like: `/path/to/file: Osx.Trojan.Agent-12345 FOUND`.

@@ -20,6 +20,7 @@ struct MenuContent: View {
             Button("Set Up OpenScout…") { openWindow(id: "setup") }
         case .unprotected:
             ForEach(status?.problems ?? [], id: \.self) { Text($0) }
+            if status?.problems?.isEmpty ?? true { Text("Protection is incomplete") }
             Button("Update Definitions") { model.updateDefinitions() }
         case .scanning:
             if let progress = status?.scanProgress {

@@ -47,9 +47,33 @@ final class EngineTests: XCTestCase {
         let runner = FakeRunner()
         runner.results["/c"] = CommandResult(exitCode: 1, stdout: "/d/report.pdf: X FOUND\nzzz: Bad FOUND\n")
         let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner)
-            .scan(paths: ["/d/report.pdf: X FOUND\nzzz"])
+            .scan(paths: ["/d/other.pdf"])
         XCTAssertTrue(result.matches.isEmpty)
         XCTAssertEqual(result.errors.count, 1, "exit 1 with nothing attributable is an error, not clean")
+    }
+
+    func testUnreadableFilesAreSkippedNotEngineFailures() {
+        let runner = FakeRunner()
+        runner.results["/c"] = CommandResult(exitCode: 2, stdout: "/a: Bad FOUND\n",
+                                             stderr: "WARNING: /gone: Can't access file /gone\n/locked: Access denied. ERROR\n")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner).scan(paths: ["/a", "/gone", "/locked"])
+        XCTAssertEqual(result.matches.map(\.path), ["/a"])
+        XCTAssertEqual(Set(result.skipped), ["/gone", "/locked"])
+        XCTAssertTrue(result.errors.isEmpty, "routine unreadable files must not mark protection broken")
+
+        runner.results["/c"] = CommandResult(exitCode: 2, stdout: "", stderr: "LibClamAV Error: cli_loaddb(): No supported database files found")
+        XCTAssertEqual(ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner).scan(paths: ["/a"]).errors.count, 1)
+    }
+
+    func testNewlineNamesAreScannedAloneAndAttributedDirectly() {
+        let runner = FakeRunner()
+        let crafted = "/d/report.pdf: X FOUND\nzzz"
+        runner.results["/c"] = CommandResult(exitCode: 1, stdout: "/d/report.pdf: X FOUND\nzzz: Osx.Bad FOUND\n")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner)
+            .scan(paths: ["/d/report.pdf", crafted])
+        XCTAssertTrue(runner.calls.contains { $0.1.last == crafted && !$0.1.contains("/d/report.pdf") },
+                      "the crafted name runs in its own clamscan call")
+        XCTAssertTrue(result.matches.contains { $0.path == crafted && $0.ruleID == "Osx.Bad" })
     }
 
     func testClamAVSizeLimitAlertsAreSkippedNotClean() {

@@ -12,8 +12,14 @@ struct PersistedState: Codable {
     var lastDefinitionsUpdate: Date?
     var settings = ScanSettings()
     var activity: [ActivityEntry] = []
-    /// Engine problems from the most recent scan. Any problem means "Not fully protected".
+    /// Engine problems from the most recent scheduled or manual scan. Cleared only when a
+    /// scan completes with every engine working. Any problem means "Not fully protected".
     var lastScanProblems: [String] = []
+    /// Engine problems from the most recent Downloads check, kept separately so a clean
+    /// download can't hide a failed scan.
+    var downloadProblems: [String] = []
+    /// Result of the last `clamscan --version` self-test.
+    var engineSelfTestPassed: Bool = false
 }
 
 /// Where OpenScout keeps its data. Owner-only.

@@ -23,7 +23,7 @@ The helper runs as the user. Anything else running as that same user can already
 Version 1 accepts this limit, as most user-level scanners do, and does three things about it:
 
 - Release builds refuse XPC connections unless the caller is signed by OpenScout's team. A build with no team ID refuses everything.
-- An engine that's missing or failing makes the mark read "Not fully protected", never All clear.
-- The limit is written down here, and tracked as an issue: sign the allow list and quarantine records with a key only the helper can read, and ship ClamAV and YARA inside the signed app so they can't be swapped.
+- An engine that's missing, fails its `clamscan --version` self-test, or fails during a scan makes the mark read "Not fully protected". A replaced `clamscan` that imitates ClamAV's output can still pass, which is why this is a mitigation, not a fix.
+- The limit is written down here, and tracked as issue #40: sign the allow list and quarantine records with a key only the helper can read, and ship ClamAV and YARA inside the signed app so they can't be swapped.
 
 A root-owned component (a privileged helper or an Endpoint Security system extension) is the real fix. That arrives with version 3.

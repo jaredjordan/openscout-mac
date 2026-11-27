@@ -22,6 +22,12 @@ Fixes from an independent security review of alpha.1.
 - Quarantining a startup item stops its job first.
 - False-positive reports replace your home folder with `~`.
 - Pause Scan now pauses until you resume.
+- Files that vanish or can't be read mid-scan are listed as skipped, not engine failures, so routine Downloads churn doesn't break protection status.
+- File names containing a newline are scanned on their own, so they can't forge results for neighboring files.
+- A clean download no longer clears a failed scan's warning.
+- The definitions check against installed apps no longer blocks updates because one file couldn't be read.
+- clamscan must pass a version self-test to count as working.
+- Quarantining a startup item stops its job only when the loaded job really comes from that file, and never touches OpenScout's own helper.
 - freshclam keeps its own folder so it downloads daily diffs, and manual updates respect ClamAV's once-an-hour limit.
 
 ## [0.1.0-alpha.1] - 2026-11-27
@@ -47,4 +53,4 @@ First tagged pre-beta iteration. The repository stays private until the beta.
 - A YARA rule source. No rule set is enabled until its license is confirmed (issue #6).
 - Fingerprint lookups against a known-malware service.
 - Live blocking and network monitoring, which need Apple's Endpoint Security and Network Extension approval.
-- Protection against other software already running as you. See docs/decisions/0002-helper-architecture.md.
+- Protection against other software already running as you. See docs/decisions/0002-helper-architecture.md and issue #40.

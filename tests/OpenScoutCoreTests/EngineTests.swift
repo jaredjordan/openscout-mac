@@ -116,7 +116,7 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(report.findings.map(\.evidence.path), [bad.path])
         XCTAssertEqual(report.findings.first?.evidence.definitionsVersion, "2026.11.27")
         XCTAssertEqual(report.findings.first?.evidence.sha256, Hashing.sha256(data: Data("bad".utf8)))
-        XCTAssertEqual(report.engineErrors.count, 1)
+        XCTAssertEqual(report.engineErrors.count, 2, "YARA keeps going and reports each file it couldn't scan")
         XCTAssertFalse(report.isClean, "an engine failure must never read as clean")
     }
 

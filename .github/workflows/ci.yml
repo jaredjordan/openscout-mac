@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-macos:
+    name: Core tests (macOS)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+      - name: Test
+        run: swift test --parallel
+
+  core-linux:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Test
+        run: swift test --parallel
+
+  app:
+    name: App and helper build (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild -project OpenScout.xcodeproj -scheme OpenScout -configuration Debug \
+            -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO build | tail -n 200
+      - name: Check bundle layout
+        run: |
+          app="$(find ~/Library/Developer/Xcode/DerivedData -path '*Debug/OpenScout.app' -maxdepth 6 | head -n 1)"
+          test -n "$app"
+          test -x "$app/Contents/MacOS/OpenScoutHelper"
+          test -f "$app/Contents/Library/LaunchAgents/com.jaredjordan.openscout.helper.plist"
+          test -f "$app/Contents/Resources/CHANGELOG.md"
+          plutil -lint "$app/Contents/Library/LaunchAgents/com.jaredjordan.openscout.helper.plist"
+
+  changelog:
+    name: Every code change is in the public log
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a CHANGELOG.md entry when code changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed="$(git diff --name-only "$BASE"...HEAD)"
+          if echo "$changed" | grep -qE '^(Sources|App)/'; then
+            echo "$changed" | grep -qx 'CHANGELOG.md' || { echo "Code changed without a CHANGELOG.md entry."; exit 1; }
+          fi
+          echo "ok"

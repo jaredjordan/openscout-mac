@@ -8,6 +8,13 @@ OpenScout is free, with no paid tier, trial, account, ads or telemetry. Every ch
 
 Current version: 0.1.0-alpha.2 (pre-beta). Every iteration gets a new version, a CHANGELOG.md entry and a git tag. See [docs/decisions/0004-versioning.md](docs/decisions/0004-versioning.md). Version 0.1 is in development. See the open [issues](https://github.com/jaredjordan/openscout-mac/issues) and the milestones v1, v2 and v3. Live blocking waits on Apple's Endpoint Security approval.
 
+## Known limitations in 0.1
+
+- **Same-user tampering is out of scope.** Malware that already runs under your account can change OpenScout's own files or its scan engines. OpenScout makes that harder and reports broken engines, but it can't prevent it until a root-owned component ships. See [ADR 0002](docs/decisions/0002-helper-architecture.md) and [#40](https://github.com/jaredjordan/openscout-mac/issues/40).
+- **Scanning depends on Homebrew.** ClamAV and YARA must be installed with `brew install clamav yara`. Without them OpenScout reads "Not fully protected". Bundling the engines inside the signed app is tracked in #40.
+- **No live blocking.** OpenScout detects within seconds but can't stop a program before it runs until Apple grants the Endpoint Security entitlement (#23).
+- **No YARA rules yet.** None ship until each rule set's license is confirmed (#6).
+
 ## How it's built
 
 | Part | What it does |

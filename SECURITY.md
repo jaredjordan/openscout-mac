@@ -16,6 +16,10 @@ You'll get an acknowledgement within 72 hours. Fixes ship in the next weekly rel
 - Parsing of property lists and engine output
 - Anything that sends file data off the Mac
 
+## Out of scope for 0.1
+
+Software already running under your own account can modify OpenScout's files in `~/Library/Application Support/OpenScout` or replace the Homebrew-installed scan engines. Reports of that class are known and tracked in #40, and won't be treated as new vulnerabilities until a root-owned component ships. Bypasses that need no prior code execution as you are in scope.
+
 ## Supported versions
 
 Only the latest release.

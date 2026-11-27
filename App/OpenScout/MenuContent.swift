@@ -1,4 +1,5 @@
 import OpenScoutCore
+import OpenScoutMac
 import SwiftUI
 
 /// A real NSMenu: standard items, no per-row icons, one icon in the header only.

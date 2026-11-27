@@ -19,6 +19,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
     private let control = NSLock()
     private var scanProgress: Double?
     private var scanPaused = false
+    private var userPaused = false
     private var scanCancelled = false
     private var lastPosture: [PostureResult] = []
 
@@ -33,6 +34,8 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
 
     func start() {
         Notifier.registerCategories()
+        definitions.recoverIfNeeded(source: "clamav")
+        definitions.recoverIfNeeded(source: "yara")
         let startupDirs = StartupLocations.standard(home: Paths.home)
         store.update { state in
             if state.startupBaseline.isEmpty {
@@ -118,9 +121,15 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         guard !files.isEmpty else { return }
         let report = scanService().scan(paths: files)
         report.findings.forEach(record)
+        store.update { $0.lastScanProblems = report.engineErrors }
         report.engineErrors.forEach { store.log("Scan problem: \($0)") }
-        if report.findings.isEmpty {
-            for file in files { store.log("\(URL(fileURLWithPath: file).lastPathComponent) in Downloads, clean") }
+        if report.isClean {
+            for file in files where !report.skipped.contains(file) {
+                store.log("\(URL(fileURLWithPath: file).lastPathComponent) in Downloads, clean")
+            }
+        }
+        for file in report.skipped {
+            store.log("\(URL(fileURLWithPath: file).lastPathComponent) is too large to scan fully")
         }
     }
 
@@ -129,6 +138,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         if scanProgress != nil { control.unlock(); return }
         scanProgress = 0
         scanPaused = false
+        userPaused = false
         scanCancelled = false
         control.unlock()
 
@@ -139,11 +149,17 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         let files = enumerateFiles(roots: roots)
         let service = scanService()
         var findings = 0
-        var problems = 0
+        var problems: [String] = []
+        var skipped = 0
         let batch = 200
         var index = 0
         while index < files.count {
             if isCancelled() { break }
+            if isUserPaused() {
+                setPaused(true)
+                Thread.sleep(forTimeInterval: 2)
+                continue
+            }
             if kind == .full && ScanPlanner.shouldPauseFullScan(conditions: SystemConditions.current()) && !userStarted {
                 setPaused(true)
                 Thread.sleep(forTimeInterval: 30)
@@ -154,20 +170,27 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
             let report = service.scan(paths: slice)
             report.findings.forEach(record)
             findings += report.findings.count
-            problems += report.engineErrors.count
+            problems += report.engineErrors
+            skipped += report.skipped.count
             index += slice.count
             setProgress(Double(index) / Double(max(files.count, 1)))
         }
         let cancelled = isCancelled()
-        control.lock(); scanProgress = nil; scanPaused = false; control.unlock()
+        control.lock(); scanProgress = nil; scanPaused = false; userPaused = false; control.unlock()
         let name = kind == .quick ? "Quick scan" : "Full scan"
+        let uniqueProblems = Array(Set(problems)).sorted()
         store.update { state in
-            if !cancelled {
+            state.lastScanProblems = uniqueProblems
+            // A scan only counts as done when every engine ran. Otherwise it runs again.
+            if !cancelled && uniqueProblems.isEmpty {
                 if kind == .quick { state.lastQuickScan = Date() } else { state.lastFullScan = Date() }
             }
-            let outcome = cancelled ? "stopped" : (findings == 0 ? "nothing found" : "\(findings) found")
-            let suffix = problems > 0 ? ", \(problems) engine problems" : ""
-            state.activity.append(ActivityEntry(text: "\(name), \(outcome)\(suffix)"))
+            let outcome: String
+            if cancelled { outcome = "stopped" }
+            else if !uniqueProblems.isEmpty { outcome = "incomplete, \(uniqueProblems.count) engine problems" }
+            else { outcome = findings == 0 ? "nothing found" : "\(findings) found" }
+            let note = skipped > 0 ? ", \(skipped) files too large to scan fully" : ""
+            state.activity.append(ActivityEntry(text: "\(name), \(outcome)\(note)"))
         }
     }
 
@@ -177,7 +200,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         for root in roots {
             guard let walker = FileManager.default.enumerator(
                 at: root, includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsPackageDescendants], errorHandler: { _, _ in true }) else { continue }
+                options: [], errorHandler: { _, _ in true }) else { continue }
             for case let url as URL in walker {
                 if skip.contains(where: { url.path.hasPrefix($0) }) { walker.skipDescendants(); continue }
                 if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
@@ -205,6 +228,7 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
 
     private func setProgress(_ value: Double) { control.lock(); scanProgress = value; control.unlock() }
     private func setPaused(_ value: Bool) { control.lock(); scanPaused = value; control.unlock() }
+    private func isUserPaused() -> Bool { control.lock(); defer { control.unlock() }; return userPaused }
     private func isCancelled() -> Bool { control.lock(); defer { control.unlock() }; return scanCancelled }
 
     // MARK: Definitions
@@ -216,29 +240,42 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         guard let freshclam = Paths.tool("freshclam"), let clamscan = Paths.tool("clamscan") else {
             return "ClamAV isn't installed. Install it with: brew install clamav"
         }
-        let download = Paths.support.appendingPathComponent("Downloads-clamav", isDirectory: true)
-        try? FileManager.default.removeItem(at: download)
-        try? FileManager.default.createDirectory(at: download, withIntermediateDirectories: true)
-        let result = ProcessCommandRunner().run(freshclam, ["--datadir=\(download.path)", "--stdout", "--no-warnings"],
+        // freshclam keeps its own folder between runs so it downloads small daily diffs, not
+        // full databases. ClamAV's CDN blocks clients that re-download everything. freshclam
+        // verifies ClamAV's signatures on the .cvd files itself.
+        let mirror = Paths.support.appendingPathComponent("freshclam", isDirectory: true)
+        try? FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+        let result = ProcessCommandRunner().run(freshclam, ["--datadir=\(mirror.path)", "--stdout", "--no-warnings"],
                                                 timeout: 900)
         guard result.exitCode == 0 else { return "ClamAV update failed: \(result.stderr.prefix(300))" }
         do {
-            let names = try FileManager.default.contentsOfDirectory(atPath: download.path)
+            let names = try FileManager.default.contentsOfDirectory(atPath: mirror.path)
                 .filter { $0.hasSuffix(".cvd") || $0.hasSuffix(".cld") }
-            for extra in try FileManager.default.contentsOfDirectory(atPath: download.path) where !names.contains(extra) {
-                try FileManager.default.removeItem(at: download.appendingPathComponent(extra))
-            }
+            let download = Paths.support.appendingPathComponent("clamav-candidate", isDirectory: true)
+            try? FileManager.default.removeItem(at: download)
+            try FileManager.default.createDirectory(at: download, withIntermediateDirectories: true)
+            // The manifest records exactly what freshclam produced, so a file swapped between
+            // this copy and the install is caught.
             var files: [String: String] = [:]
-            for name in names { files[name] = try Hashing.sha256(fileAt: download.appendingPathComponent(name)) }
+            for name in names {
+                try FileManager.default.copyItem(at: mirror.appendingPathComponent(name),
+                                                 to: download.appendingPathComponent(name))
+                files[name] = try Hashing.sha256(fileAt: download.appendingPathComponent(name))
+            }
             let version = ISO8601DateFormatter().string(from: Date())
             let corpus = ["/Applications"]
             let currentDB = definitions.currentDirectory(source: "clamav")
             let currentlyFlagged: Set<String> = FileManager.default.fileExists(atPath: currentDB.path)
-                ? Set((try? ClamAVEngine(clamscanPath: clamscan, databaseDirectory: currentDB.path).scan(paths: corpus))?.map(\.path) ?? [])
+                ? Set(ClamAVEngine(clamscanPath: clamscan, databaseDirectory: currentDB.path, timeout: 3600)
+                        .scan(paths: corpus, recursive: true).matches.map(\.path))
                 : []
             try definitions.install(manifest: DefinitionManifest(source: "clamav", version: version, files: files),
                                     from: download, currentlyFlagged: currentlyFlagged) { staged in
-                Set(try ClamAVEngine(clamscanPath: clamscan, databaseDirectory: staged.path).scan(paths: corpus).map(\.path))
+                // Scan inside every app bundle with the candidate set. Anything new it flags holds the update.
+                let check = ClamAVEngine(clamscanPath: clamscan, databaseDirectory: staged.path, timeout: 3600)
+                    .scan(paths: corpus, recursive: true)
+                if !check.errors.isEmpty { throw EngineError.failed(tool: "clamscan", exitCode: 2, stderr: check.errors.joined(separator: "; ")) }
+                return Set(check.matches.map(\.path))
             }
             store.update {
                 $0.lastDefinitionsUpdate = Date()
@@ -261,9 +298,12 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         let paused = scanPaused
         control.unlock()
         let fda = FullDiskAccessProbe.hasAccess(home: Paths.home)
+        let haveEngine = Paths.tool("clamscan") != nil
+            && FileManager.default.fileExists(atPath: definitions.currentDirectory(source: "clamav").path)
         return store.read { state in
             let inputs = ProtectionInputs(fullDiskAccess: fda, helperRunning: true, openFindings: state.findings.count,
-                                          scanProgress: progress, lastDefinitionsUpdate: state.lastDefinitionsUpdate)
+                                          scanProgress: progress, lastDefinitionsUpdate: state.lastDefinitionsUpdate,
+                                          enginesHealthy: haveEngine && state.lastScanProblems.isEmpty)
             let mark = ProtectionState.mark(for: inputs, now: Date())
             return HelperStatus(mark: mark,
                                 accessibilityLabel: ProtectionState.accessibilityLabel(for: mark, inputs: inputs),
@@ -273,7 +313,8 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
                                 scanProgress: progress, scanPaused: paused, findings: state.findings,
                                 startupItems: state.startupBaseline, posture: lastPosture,
                                 recentActivity: Array(state.activity.suffix(20).reversed()),
-                                settings: state.settings)
+                                settings: state.settings,
+                                problems: haveEngine ? state.lastScanProblems : [ScanService.noEnginesError])
         }
     }
 
@@ -287,8 +328,15 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         reply(nil)
     }
 
-    func pauseScan(reply: @escaping (String?) -> Void) { setPaused(true); reply(nil) }
-    func resumeScan(reply: @escaping (String?) -> Void) { setPaused(false); reply(nil) }
+    func pauseScan(reply: @escaping (String?) -> Void) {
+        control.lock(); userPaused = true; control.unlock()
+        reply(nil)
+    }
+
+    func resumeScan(reply: @escaping (String?) -> Void) {
+        control.lock(); userPaused = false; control.unlock()
+        reply(nil)
+    }
 
     func stopScan(reply: @escaping (String?) -> Void) {
         control.lock(); scanCancelled = true; control.unlock()
@@ -301,6 +349,11 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
             return reply("That finding no longer exists")
         }
         do {
+            if finding.evidence.engine == .startupWatcher,
+               let item = try? StartupItemParser.parse(plistAt: URL(fileURLWithPath: finding.evidence.path)) {
+                // Stop the job first. Moving the plist alone leaves it running until logout.
+                _ = ProcessCommandRunner().run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(item.label)"], timeout: 15)
+            }
             try quarantineStore.quarantine(fileAt: URL(fileURLWithPath: finding.evidence.path), finding: finding)
             store.update {
                 $0.findings.removeAll { $0.id == id }
@@ -361,6 +414,10 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
     }
 
     func updateDefinitions(reply: @escaping (String?) -> Void) {
+        let last = store.read(\.lastClamAVCheck)
+        if let last, Date().timeIntervalSince(last) < UpdatePolicy.clamAVMinimumInterval {
+            return reply("Definitions were checked less than an hour ago. ClamAV blocks clients that check more often.")
+        }
         work.async { [weak self] in reply(self?.refreshClamAV()) }
     }
 }

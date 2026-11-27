@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public struct CommandResult: Equatable, Sendable {
     public var exitCode: Int32
@@ -59,12 +64,20 @@ public struct ProcessCommandRunner: CommandRunner {
         if finished.wait(timeout: .now() + timeout) == .timedOut {
             timedOut = true
             process.terminate()
-            _ = finished.wait(timeout: .now() + 5)
+            if finished.wait(timeout: .now() + 5) == .timedOut {
+                // The tool ignored SIGTERM. Kill it so it can't hold the helper's queue.
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 2)
+            }
         }
         out.fileHandleForReading.readabilityHandler = nil
         err.fileHandleForReading.readabilityHandler = nil
-        outCollector.append(out.fileHandleForReading.readDataToEndOfFile())
-        errCollector.append(err.fileHandleForReading.readDataToEndOfFile())
+        if !timedOut {
+            // Only read to the end when the process exited normally. After a timeout a
+            // grandchild could still hold the pipe open and block this read forever.
+            outCollector.append(out.fileHandleForReading.readDataToEndOfFile())
+            errCollector.append(err.fileHandleForReading.readDataToEndOfFile())
+        }
         return CommandResult(exitCode: timedOut ? -1 : process.terminationStatus,
                              stdout: outCollector.string,
                              stderr: errCollector.string,

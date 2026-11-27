@@ -81,6 +81,9 @@ final class PolicyTests: XCTestCase {
         XCTAssertEqual(mark(true, true, 0, nil, now.addingTimeInterval(-5 * 86400)), .stale)
         XCTAssertEqual(mark(true), .clear)
         XCTAssertEqual(mark(nil), .clear, "unknown Full Disk Access isn't a denial")
+        let broken = ProtectionInputs(fullDiskAccess: true, helperRunning: true, openFindings: 0, scanProgress: nil,
+                                      lastDefinitionsUpdate: fresh, enginesHealthy: false)
+        XCTAssertEqual(ProtectionState.mark(for: broken, now: now), .unprotected, "no working engine is never All clear")
     }
 
     func testVoiceOverLabels() {

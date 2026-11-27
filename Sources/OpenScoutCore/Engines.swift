@@ -21,9 +21,37 @@ public enum EngineError: Error, Equatable {
     case failed(tool: String, exitCode: Int32, stderr: String)
 }
 
+/// What one engine found, plus anything that went wrong. Matches are never thrown away
+/// because another file in the same batch failed.
+public struct EngineScanResult: Equatable, Sendable {
+    public var matches: [EngineMatch]
+    /// Problems that mean some files weren't fully scanned. Never reported as clean.
+    public var errors: [String]
+    /// Files the engine skipped by design (for example over ClamAV's size limit).
+    public var skipped: [String]
+
+    public init(matches: [EngineMatch] = [], errors: [String] = [], skipped: [String] = []) {
+        self.matches = matches
+        self.errors = errors
+        self.skipped = skipped
+    }
+}
+
 public protocol ScanEngine: Sendable {
     var engine: Engine { get }
-    func scan(paths: [String]) throws -> [EngineMatch]
+    /// - Parameter recursive: scan inside folders and app bundles passed in `paths`.
+    func scan(paths: [String], recursive: Bool) -> EngineScanResult
+}
+
+public extension ScanEngine {
+    func scan(paths: [String]) -> EngineScanResult { scan(paths: paths, recursive: false) }
+}
+
+/// True when `path` is one of the inputs, or inside one of them for a recursive scan.
+func isWithin(_ path: String, inputs: Set<String>, recursive: Bool) -> Bool {
+    if inputs.contains(path) { return true }
+    guard recursive else { return false }
+    return inputs.contains { path.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
 }
 
 /// ClamAV, run as a separate process. The project is Apache 2.0 and ClamAV is GPLv2,
@@ -35,6 +63,9 @@ public struct ClamAVEngine: ScanEngine {
     public var runner: CommandRunner
     public var timeout: TimeInterval
 
+    /// Prefix of ClamAV's own "file too big to scan fully" alerts.
+    static let limitsPrefix = "Heuristics.Limits.Exceeded"
+
     public init(clamscanPath: String, databaseDirectory: String,
                 runner: CommandRunner = ProcessCommandRunner(), timeout: TimeInterval = 600) {
         self.clamscanPath = clamscanPath
@@ -43,23 +74,42 @@ public struct ClamAVEngine: ScanEngine {
         self.timeout = timeout
     }
 
-    public func scan(paths: [String]) throws -> [EngineMatch] {
-        guard !paths.isEmpty else { return [] }
-        // --no-summary keeps output to one line per infected file. "--" ends options so a
+    public static func arguments(databaseDirectory: String, recursive: Bool, paths: [String]) -> [String] {
+        // Raised size limits plus --alert-exceeds-max, so a file padded past the limit is
+        // reported as not fully scanned instead of passing silently. "--" ends options so a
         // file named like a flag can't change behavior.
-        let args = ["--no-summary", "--infected", "--database=\(databaseDirectory)", "--"] + paths
-        let result = runner.run(clamscanPath, args, timeout: timeout)
-        if result.timedOut { throw EngineError.timedOut("clamscan") }
-        // clamscan exits 0 for clean, 1 for found, 2 for errors.
-        switch result.exitCode {
-        case 0: return []
-        case 1: return Self.parse(result.stdout)
-        case 127: throw EngineError.toolMissing(clamscanPath)
-        default: throw EngineError.failed(tool: "clamscan", exitCode: result.exitCode, stderr: result.stderr)
-        }
+        ["--no-summary", "--infected", "--max-filesize=512M", "--max-scansize=1024M",
+         "--alert-exceeds-max=yes", "--database=\(databaseDirectory)"]
+            + (recursive ? ["--recursive"] : []) + ["--"] + paths
     }
 
-    /// Lines look like: `/path/to/file: Osx.Trojan.Agent-12345 FOUND`
+    public func scan(paths: [String], recursive: Bool) -> EngineScanResult {
+        guard !paths.isEmpty else { return EngineScanResult() }
+        let args = Self.arguments(databaseDirectory: databaseDirectory, recursive: recursive, paths: paths)
+        let result = runner.run(clamscanPath, args, timeout: timeout)
+        if result.timedOut { return EngineScanResult(errors: ["clamscan timed out"]) }
+        if result.exitCode == 127 { return EngineScanResult(errors: ["clamscan isn't installed at \(clamscanPath)"]) }
+        // clamscan exits 0 for clean, 1 for found, 2 for errors. Matches are parsed in every
+        // case: one unreadable file must not hide detections in the rest of the batch.
+        let inputs = Set(paths)
+        let parsed = Self.parse(result.stdout).filter { isWithin($0.path, inputs: inputs, recursive: recursive) }
+        var out = EngineScanResult()
+        for match in parsed {
+            if match.ruleID.hasPrefix(Self.limitsPrefix) { out.skipped.append(match.path) } else { out.matches.append(match) }
+        }
+        switch result.exitCode {
+        case 0:
+            break
+        case 1:
+            if parsed.isEmpty { out.errors.append("clamscan reported a detection OpenScout couldn't match to a file") }
+        default:
+            out.errors.append("clamscan exited \(result.exitCode): \(result.stderr.prefix(300))")
+        }
+        return out
+    }
+
+    /// Lines look like: `/path/to/file: Osx.Trojan.Agent-12345 FOUND`.
+    /// Only paths that match an input survive, so a crafted file name can't redirect a finding.
     public static func parse(_ output: String) -> [EngineMatch] {
         output.split(whereSeparator: \.isNewline).compactMap { raw in
             let line = String(raw)
@@ -91,40 +141,58 @@ public struct YaraEngine: ScanEngine {
         self.timeout = timeout
     }
 
-    public func scan(paths: [String]) throws -> [EngineMatch] {
-        var matches: [EngineMatch] = []
+    public func scan(paths: [String], recursive: Bool) -> EngineScanResult {
+        var out = EngineScanResult()
         for path in paths {
             // -s prints matched strings with offsets, which the inspector shows as the match.
             // -C: the rules file is precompiled. -w: no warnings mixed into output.
-            let result = runner.run(yaraPath, ["-C", "-w", "-s", "--", rulesPath, path], timeout: timeout)
-            if result.timedOut { throw EngineError.timedOut("yara") }
-            if result.exitCode == 127 { throw EngineError.toolMissing(yaraPath) }
+            var args = ["-C", "-w", "-s"]
+            if recursive { args.append("-r") }
+            args += ["--", rulesPath, path]
+            let result = runner.run(yaraPath, args, timeout: timeout)
+            if result.timedOut { out.errors.append("yara timed out on a file"); continue }
+            if result.exitCode == 127 { out.errors.append("yara isn't installed at \(yaraPath)"); break }
             guard result.exitCode == 0 else {
-                throw EngineError.failed(tool: "yara", exitCode: result.exitCode, stderr: result.stderr)
+                out.errors.append("yara exited \(result.exitCode): \(result.stderr.prefix(300))")
+                continue
             }
-            matches += Self.parse(result.stdout, scannedPath: path)
+            let matches = Self.parse(result.stdout, scannedPath: path, recursive: recursive)
+            let printable = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            if matches.isEmpty && !printable.isEmpty {
+                // Output we couldn't attribute, for example a file name with a newline in it.
+                out.errors.append("yara output couldn't be matched to a file")
+            }
+            out.matches += matches
         }
-        return matches
+        return out
     }
 
     /// Output looks like:
     ///
     ///     MacStealer_Generic /Users/me/Downloads/x.dmg
     ///     0x1a2b:$s1: keychain-dump
-    public static func parse(_ output: String, scannedPath: String) -> [EngineMatch] {
+    public static func parse(_ output: String, scannedPath: String, recursive: Bool = false) -> [EngineMatch] {
         var matches: [EngineMatch] = []
+        let inputs: Set<String> = [scannedPath]
+        var lastWasMatch = false
         for raw in output.split(whereSeparator: \.isNewline) {
             let line = String(raw)
             if line.hasPrefix("0x") {
-                guard !matches.isEmpty else { continue }
+                guard lastWasMatch, !matches.isEmpty else { continue }
                 let index = matches.count - 1
                 let existing = matches[index].detail.map { $0 + "\n" } ?? ""
                 matches[index].detail = existing + line
             } else if let space = line.firstIndex(of: " ") {
                 let rule = String(line[..<space])
                 let path = String(line[line.index(after: space)...])
-                guard !rule.isEmpty, path == scannedPath else { continue }
+                guard !rule.isEmpty, isWithin(path, inputs: inputs, recursive: recursive) else {
+                    lastWasMatch = false
+                    continue
+                }
                 matches.append(EngineMatch(engine: .yara, path: path, ruleID: rule))
+                lastWasMatch = true
+            } else {
+                lastWasMatch = false
             }
         }
         return matches

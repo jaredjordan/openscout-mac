@@ -54,10 +54,13 @@ struct FindingInspector: View {
         Team ID: \(e.teamID ?? "none")
         Match: \(e.matchDetail ?? "none")
         """
+        // Public issue: never include the user's home folder path.
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let redacted = body.replacingOccurrences(of: home, with: "~")
         var components = URLComponents(string: "https://github.com/jaredjordan/openscout-mac/issues/new")!
         components.queryItems = [URLQueryItem(name: "title", value: "False positive: \(e.ruleID)"),
                                  URLQueryItem(name: "labels", value: "detection"),
-                                 URLQueryItem(name: "body", value: body)]
+                                 URLQueryItem(name: "body", value: redacted)]
         if let url = components.url { NSWorkspace.shared.open(url) }
     }
 }

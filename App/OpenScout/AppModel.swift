@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var lastError: String?
     @Published var hidePaths = false
     @Published var selectedFindingID: Finding.ID?
+    private var lastGoodStatus = Date.distantPast
 
     private var connection: NSXPCConnection?
     private var timer: Timer?
@@ -41,16 +42,24 @@ final class AppModel: ObservableObject {
     private func helper() -> OpenScoutHelperProtocol? {
         if connection == nil { connect() }
         return connection?.remoteObjectProxyWithErrorHandler { [weak self] error in
-            Task { @MainActor in self?.lastError = "The background helper isn't responding. \(error.localizedDescription)" }
+            Task { @MainActor in
+                // Drop the old status: a dead helper must never keep showing All clear.
+                self?.status = nil
+                self?.lastError = "The background helper isn't responding. \(error.localizedDescription)"
+            }
         } as? OpenScoutHelperProtocol
     }
 
     func refresh() {
+        if status != nil && Date().timeIntervalSince(lastGoodStatus) > 10 {
+            status = nil
+        }
         helper()?.status { [weak self] data, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let data, let decoded = try? Self.makeDecoder().decode(HelperStatus.self, from: data) {
                     self.status = decoded
+                    self.lastGoodStatus = Date()
                     self.lastError = nil
                 }
                 if let error { self.lastError = error }

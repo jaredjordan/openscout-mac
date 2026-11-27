@@ -5,6 +5,8 @@ public struct ScanReport: Equatable, Sendable {
     public var findings: [Finding]
     /// Engines that failed. A failed engine is reported, never treated as "nothing found".
     public var engineErrors: [String]
+    /// Files skipped by design, such as files over ClamAV's size limit. Shown, not hidden.
+    public var skipped: [String] = []
 
     public var isClean: Bool { findings.isEmpty && engineErrors.isEmpty }
 }
@@ -21,24 +23,31 @@ public struct ScanService: Sendable {
         self.definitionsVersion = definitionsVersion
     }
 
+    public static let noEnginesError = "No scan engine is available. Install ClamAV and download definitions."
+
     public func scan(paths: [String], now: Date = Date()) -> ScanReport {
+        // With no engine, nothing was scanned. That must never read as clean.
+        guard !engines.isEmpty else {
+            return ScanReport(scannedFiles: 0, findings: [], engineErrors: [Self.noEnginesError])
+        }
         var findings: [Finding] = []
         var errors: [String] = []
+        var skipped: [String] = []
         var hashes: [String: String] = [:]
         for engine in engines {
-            do {
-                for match in try engine.scan(paths: paths) {
-                    let sha = hashes[match.path] ?? (try? Hashing.sha256(fileAt: URL(fileURLWithPath: match.path)))
-                    hashes[match.path] = sha
-                    if let sha, allowStore?.isAllowed(path: match.path, sha256: sha) == true { continue }
-                    findings.append(FindingBuilder.finding(for: match, sha256: sha,
-                                                           definitionsVersion: definitionsVersion, now: now))
-                }
-            } catch {
-                errors.append("\(engine.engine.rawValue): \(error)")
+            let result = engine.scan(paths: paths)
+            errors += result.errors.map { "\(engine.engine.rawValue): \($0)" }
+            skipped += result.skipped
+            for match in result.matches {
+                let sha = hashes[match.path] ?? (try? Hashing.sha256(fileAt: URL(fileURLWithPath: match.path)))
+                hashes[match.path] = sha
+                if let sha, allowStore?.isAllowed(path: match.path, sha256: sha) == true { continue }
+                findings.append(FindingBuilder.finding(for: match, sha256: sha,
+                                                       definitionsVersion: definitionsVersion, now: now))
             }
         }
-        return ScanReport(scannedFiles: paths.count, findings: findings, engineErrors: errors)
+        return ScanReport(scannedFiles: paths.count, findings: findings, engineErrors: errors,
+                          skipped: Array(Set(skipped)).sorted())
     }
 }
 

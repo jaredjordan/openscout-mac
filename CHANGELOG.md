@@ -4,6 +4,26 @@ Every change to OpenScout is listed here, including detections that were added o
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-11-27
+
+Fixes from an independent security review of alpha.1.
+
+### Security
+- Release builds refuse every XPC connection unless the caller is signed by OpenScout's team. A build without a team ID refuses all connections.
+- A missing or failing scan engine now reads "Not fully protected". A scan with engine errors doesn't count as done, and Downloads files are only logged clean when every engine ran.
+- Engines report matches and errors together, so one unreadable file no longer hides detections elsewhere in a batch.
+- A crafted file name can no longer redirect a ClamAV finding to a different file, and YARA output that can't be matched to a file counts as an error.
+- Files over ClamAV's size limit are reported as not fully scanned instead of passing silently. Limits are raised to 512 MB per file.
+- Scans now look inside app bundles. The definitions test against installed apps now scans inside them too.
+- If the helper crashes mid-update, the last good definitions set is restored at startup.
+- Hung tools are killed after a grace period so they can't freeze the helper.
+- The menu stops showing a status once the helper stops answering.
+- Quarantine writes its record before moving a file, and never changes permissions through a symlink.
+- Quarantining a startup item stops its job first.
+- False-positive reports replace your home folder with `~`.
+- Pause Scan now pauses until you resume.
+- freshclam keeps its own folder so it downloads daily diffs, and manual updates respect ClamAV's once-an-hour limit.
+
 ## [0.1.0-alpha.1] - 2026-11-27
 
 First tagged pre-beta iteration. The repository stays private until the beta.
@@ -27,3 +47,4 @@ First tagged pre-beta iteration. The repository stays private until the beta.
 - A YARA rule source. No rule set is enabled until its license is confirmed (issue #6).
 - Fingerprint lookups against a known-malware service.
 - Live blocking and network monitoring, which need Apple's Endpoint Security and Network Extension approval.
+- Protection against other software already running as you. See docs/decisions/0002-helper-architecture.md.

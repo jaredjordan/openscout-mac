@@ -15,22 +15,57 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(matches.map(\.ruleID), ["Osx.Trojan.Agent-12345", "Osx.Adware.Pirrit"])
     }
 
-    func testClamAVExitCodes() throws {
+    func testClamAVExitCodesAndArguments() {
         let runner = FakeRunner()
         let engine = ClamAVEngine(clamscanPath: "/opt/clamscan", databaseDirectory: "/db", runner: runner)
         runner.results["/opt/clamscan"] = CommandResult(exitCode: 0, stdout: "")
-        XCTAssertEqual(try engine.scan(paths: ["/a"]), [])
-        XCTAssertEqual(runner.calls.last?.1, ["--no-summary", "--infected", "--database=/db", "--", "/a"])
+        XCTAssertEqual(engine.scan(paths: ["/a"]), EngineScanResult())
+        XCTAssertEqual(runner.calls.last?.1, ["--no-summary", "--infected", "--max-filesize=512M", "--max-scansize=1024M",
+                                              "--alert-exceeds-max=yes", "--database=/db", "--", "/a"])
 
         runner.results["/opt/clamscan"] = CommandResult(exitCode: 1, stdout: "/a: Bad FOUND\n")
-        XCTAssertEqual(try engine.scan(paths: ["/a"]).map(\.ruleID), ["Bad"])
-
-        runner.results["/opt/clamscan"] = CommandResult(exitCode: 2, stdout: "", stderr: "db error")
-        XCTAssertThrowsError(try engine.scan(paths: ["/a"]))
+        XCTAssertEqual(engine.scan(paths: ["/a"]).matches.map(\.ruleID), ["Bad"])
 
         runner.results["/opt/clamscan"] = CommandResult(exitCode: -1, stdout: "", timedOut: true)
-        XCTAssertThrowsError(try engine.scan(paths: ["/a"])) { XCTAssertEqual($0 as? EngineError, .timedOut("clamscan")) }
-        XCTAssertEqual(try engine.scan(paths: []), [])
+        XCTAssertEqual(engine.scan(paths: ["/a"]).errors, ["clamscan timed out"])
+        XCTAssertEqual(engine.scan(paths: []), EngineScanResult())
+
+        _ = engine.scan(paths: ["/Applications"], recursive: true)
+        XCTAssertTrue(runner.calls.last?.1.contains("--recursive") == true)
+    }
+
+    func testClamAVKeepsDetectionsWhenAnotherFileFails() {
+        let runner = FakeRunner()
+        runner.results["/c"] = CommandResult(exitCode: 2, stdout: "/a: Bad FOUND\n", stderr: "/b: Access denied")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner).scan(paths: ["/a", "/b"])
+        XCTAssertEqual(result.matches.map(\.path), ["/a"], "detections survive an error elsewhere in the batch")
+        XCTAssertEqual(result.errors.count, 1)
+    }
+
+    func testClamAVIgnoresPathsThatWereNotScanned() {
+        // A file named "report.pdf: X FOUND\nzzz" must not redirect a finding to report.pdf.
+        let runner = FakeRunner()
+        runner.results["/c"] = CommandResult(exitCode: 1, stdout: "/d/report.pdf: X FOUND\nzzz: Bad FOUND\n")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner)
+            .scan(paths: ["/d/report.pdf: X FOUND\nzzz"])
+        XCTAssertTrue(result.matches.isEmpty)
+        XCTAssertEqual(result.errors.count, 1, "exit 1 with nothing attributable is an error, not clean")
+    }
+
+    func testClamAVSizeLimitAlertsAreSkippedNotClean() {
+        let runner = FakeRunner()
+        runner.results["/c"] = CommandResult(exitCode: 1, stdout: "/big.dmg: Heuristics.Limits.Exceeded.MaxFileSize FOUND\n")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner).scan(paths: ["/big.dmg"])
+        XCTAssertTrue(result.matches.isEmpty)
+        XCTAssertEqual(result.skipped, ["/big.dmg"])
+    }
+
+    func testRecursiveScanAcceptsFilesInsideInputs() {
+        let runner = FakeRunner()
+        runner.results["/c"] = CommandResult(exitCode: 1, stdout: "/Applications/X.app/Contents/MacOS/X: Bad FOUND\n/Elsewhere/y: Bad FOUND\n")
+        let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner)
+            .scan(paths: ["/Applications"], recursive: true)
+        XCTAssertEqual(result.matches.map(\.path), ["/Applications/X.app/Contents/MacOS/X"])
     }
 
     func testYaraParseAttachesMatchedStrings() {
@@ -40,6 +75,7 @@ final class EngineTests: XCTestCase {
         0x2000:$s2: osascript
         Other_Rule /Users/me/Downloads/x.dmg
         Wrong_Path /etc/passwd
+        0x9:$s: must not attach to Other_Rule
         """
         let matches = YaraEngine.parse(out, scannedPath: "/Users/me/Downloads/x.dmg")
         XCTAssertEqual(matches.map(\.ruleID), ["MacStealer_Generic", "Other_Rule"])
@@ -47,11 +83,15 @@ final class EngineTests: XCTestCase {
         XCTAssertNil(matches.last?.detail)
     }
 
-    func testYaraArgumentsEndOptionsBeforePaths() throws {
+    func testYaraArgumentsAndErrorsKeepScanning() {
         let runner = FakeRunner()
         runner.results["/opt/yara"] = CommandResult(exitCode: 0, stdout: "")
-        _ = try YaraEngine(yaraPath: "/opt/yara", rulesPath: "/r.yarc", runner: runner).scan(paths: ["-rf"])
+        _ = YaraEngine(yaraPath: "/opt/yara", rulesPath: "/r.yarc", runner: runner).scan(paths: ["-rf"])
         XCTAssertEqual(runner.calls.first?.1, ["-C", "-w", "-s", "--", "/r.yarc", "-rf"])
+
+        runner.results["/opt/yara"] = CommandResult(exitCode: 0, stdout: "Rule /some/other\nline")
+        let odd = YaraEngine(yaraPath: "/opt/yara", rulesPath: "/r", runner: runner).scan(paths: ["/weird\nname"])
+        XCTAssertEqual(odd.errors.count, 1, "output that can't be attributed is an error, not clean")
     }
 
     func testScanServiceSkipsAllowedFilesAndReportsEngineErrors() throws {
@@ -78,6 +118,12 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(report.findings.first?.evidence.sha256, Hashing.sha256(data: Data("bad".utf8)))
         XCTAssertEqual(report.engineErrors.count, 1)
         XCTAssertFalse(report.isClean, "an engine failure must never read as clean")
+    }
+
+    func testNoEnginesIsNeverClean() {
+        let report = ScanService(engines: []).scan(paths: ["/a"])
+        XCTAssertFalse(report.isClean)
+        XCTAssertEqual(report.engineErrors, [ScanService.noEnginesError])
     }
 
     func testAllowStorePersistsAndMatchesExactBytesOnly() throws {

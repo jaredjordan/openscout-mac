@@ -104,6 +104,19 @@ public final class DefinitionStore: @unchecked Sendable {
         }
     }
 
+    /// After a crash between the two renames of a swap, `current` can be missing while
+    /// `previous` holds the last good set. Call at startup. Returns true if it restored one.
+    @discardableResult
+    public func recoverIfNeeded(source: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let current = dir(source, "current")
+        let previous = dir(source, "previous")
+        guard !fileManager.fileExists(atPath: current.path), fileManager.fileExists(atPath: previous.path) else {
+            return false
+        }
+        return (try? fileManager.moveItem(at: previous, to: current)) != nil
+    }
+
     /// One-click rollback to the previous set.
     public func rollback(source: String) throws {
         lock.lock(); defer { lock.unlock() }

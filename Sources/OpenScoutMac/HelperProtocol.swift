@@ -23,11 +23,14 @@ public struct HelperStatus: Codable, Equatable, Sendable {
     public var posture: [PostureResult]
     public var recentActivity: [ActivityEntry]
     public var settings: ScanSettings
+    /// Why protection is incomplete, in plain words. Empty when everything ran.
+    public var problems: [String]
 
     public init(mark: MarkState, accessibilityLabel: String, fullDiskAccess: Bool?, lastQuickScan: Date?,
                 lastFullScan: Date?, lastDefinitionsUpdate: Date?, definitionsVersion: String?,
                 scanProgress: Double?, scanPaused: Bool, findings: [Finding], startupItems: [StartupItem],
-                posture: [PostureResult], recentActivity: [ActivityEntry], settings: ScanSettings) {
+                posture: [PostureResult], recentActivity: [ActivityEntry], settings: ScanSettings,
+                problems: [String]) {
         self.mark = mark
         self.accessibilityLabel = accessibilityLabel
         self.fullDiskAccess = fullDiskAccess
@@ -42,6 +45,7 @@ public struct HelperStatus: Codable, Equatable, Sendable {
         self.posture = posture
         self.recentActivity = recentActivity
         self.settings = settings
+        self.problems = problems
     }
 }
 

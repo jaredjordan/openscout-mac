@@ -15,9 +15,12 @@ struct MenuContent: View {
         case .unprotected where status?.fullDiskAccess == false:
             Text("Full Disk Access is off, so Mail, Messages and Safari aren't scanned")
             Button("Turn On Full Disk Access…") { PrivacySettings.openFullDiskAccess() }
-        case .unprotected:
+        case .unprotected where status == nil:
             Text("The background helper isn't running")
             Button("Set Up OpenScout…") { openWindow(id: "setup") }
+        case .unprotected:
+            ForEach(status?.problems ?? [], id: \.self) { Text($0) }
+            Button("Update Definitions") { model.updateDefinitions() }
         case .scanning:
             if let progress = status?.scanProgress {
                 Text(status?.scanPaused == true ? "Paused while you work" : "\(Int(progress * 100))% scanned")

@@ -65,13 +65,23 @@ public final class QuarantineStore: @unchecked Sendable {
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: false,
                                         attributes: [.posixPermissions: 0o700])
         let payload = folder.appendingPathComponent("payload")
-        try fileManager.moveItem(at: url, to: payload)
-        try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: payload.path)
-
+        // Write the record first: a moved file must never exist without a record to restore it.
         let record = QuarantineRecord(id: id, originalPath: path, originalPermissions: permissions,
                                       sha256: sha, quarantinedAt: now, finding: finding)
-        try JSONEncoder.openScout.encode(record)
-            .write(to: folder.appendingPathComponent("record.json"), options: .atomic)
+        do {
+            try JSONEncoder.openScout.encode(record)
+                .write(to: folder.appendingPathComponent("record.json"), options: .atomic)
+            try fileManager.moveItem(at: url, to: payload)
+        } catch {
+            try? fileManager.removeItem(at: folder)
+            throw error
+        }
+        // If the file was swapped for a symlink between the check and the move, the moved
+        // item is the link. Never chmod through it.
+        guard (try? fileManager.attributesOfItem(atPath: payload.path)[.type] as? FileAttributeType) == .typeRegular else {
+            throw QuarantineError.notARegularFile(path)
+        }
+        try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: payload.path)
         return record
     }
 

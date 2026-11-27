@@ -88,6 +88,19 @@ final class DefinitionTests: XCTestCase {
         XCTAssertTrue(DefinitionStore.isSafeFileName("daily.cvd"))
     }
 
+    func testRecoversWhenCrashLeftNoCurrentSet() throws {
+        let root = try makeTempDir()
+        let store = DefinitionStore(root: root)
+        let (v1, h1) = try makeDownload(["daily.cvd": "one"])
+        try store.install(manifest: DefinitionManifest(source: "clamav", version: "1", files: h1), from: v1, corpusCheck: { _ in [] })
+        let (v2, h2) = try makeDownload(["daily.cvd": "two"])
+        try store.install(manifest: DefinitionManifest(source: "clamav", version: "2", files: h2), from: v2, corpusCheck: { _ in [] })
+        try fm.removeItem(at: store.currentDirectory(source: "clamav"))
+        XCTAssertTrue(store.recoverIfNeeded(source: "clamav"))
+        XCTAssertEqual(store.currentManifest(source: "clamav")?.version, "1")
+        XCTAssertFalse(store.recoverIfNeeded(source: "clamav"))
+    }
+
     func testRollbackWithNothingPrevious() throws {
         let store = DefinitionStore(root: try makeTempDir())
         XCTAssertThrowsError(try store.rollback(source: "clamav")) {

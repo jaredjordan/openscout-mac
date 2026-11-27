@@ -12,6 +12,8 @@ struct PersistedState: Codable {
     var lastDefinitionsUpdate: Date?
     var settings = ScanSettings()
     var activity: [ActivityEntry] = []
+    /// Engine problems from the most recent scan. Any problem means "Not fully protected".
+    var lastScanProblems: [String] = []
 }
 
 /// Where OpenScout keeps its data. Owner-only.

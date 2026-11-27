@@ -32,9 +32,12 @@ public struct ProtectionInputs: Equatable, Sendable {
     public var openFindings: Int
     public var scanProgress: Double?
     public var lastDefinitionsUpdate: Date?
+    /// False when no engine is usable or the last scan had engine errors.
+    public var enginesHealthy: Bool
 
     public init(fullDiskAccess: Bool?, helperRunning: Bool, openFindings: Int,
-                scanProgress: Double?, lastDefinitionsUpdate: Date?) {
+                scanProgress: Double?, lastDefinitionsUpdate: Date?, enginesHealthy: Bool = true) {
+        self.enginesHealthy = enginesHealthy
         self.fullDiskAccess = fullDiskAccess
         self.helperRunning = helperRunning
         self.openFindings = openFindings
@@ -46,7 +49,7 @@ public struct ProtectionInputs: Equatable, Sendable {
 public enum ProtectionState {
     /// Priority: a scanner that can't see everything must never say All clear.
     public static func mark(for inputs: ProtectionInputs, now: Date) -> MarkState {
-        if inputs.fullDiskAccess == false || !inputs.helperRunning { return .unprotected }
+        if inputs.fullDiskAccess == false || !inputs.helperRunning || !inputs.enginesHealthy { return .unprotected }
         if inputs.openFindings > 0 { return .review }
         if inputs.scanProgress != nil { return .scanning }
         if UpdatePolicy.isStale(lastUpdate: inputs.lastDefinitionsUpdate, now: now) { return .stale }

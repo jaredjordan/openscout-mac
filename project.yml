@@ -1,0 +1,80 @@
+# XcodeGen spec. Generate the Xcode project with: xcodegen generate
+name: OpenScout
+options:
+  bundleIdPrefix: com.jaredjordan
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    # Set in a local xcconfig or CI secret for signed builds. Empty in development.
+    OPENSCOUT_TEAM_ID: ""
+    DEVELOPMENT_TEAM: $(OPENSCOUT_TEAM_ID)
+
+packages:
+  OpenScout:
+    path: .
+
+targets:
+  OpenScout:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/OpenScout
+      - path: CHANGELOG.md
+        buildPhase: resources
+      - path: App/OpenScoutHelper/com.jaredjordan.openscout.helper.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
+    dependencies:
+      - package: OpenScout
+        product: OpenScoutCore
+      - package: OpenScout
+        product: OpenScoutMac
+      - target: OpenScoutHelper
+        embed: true
+        copy:
+          destination: executables
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jaredjordan.openscout
+        PRODUCT_NAME: OpenScout
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: OpenScout
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Apache License 2.0"
+
+  OpenScoutHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: App/OpenScoutHelper
+        excludes:
+          - "*.plist"
+    dependencies:
+      - package: OpenScout
+        product: OpenScoutCore
+      - package: OpenScout
+        product: OpenScoutMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jaredjordan.openscout.helper
+        PRODUCT_NAME: OpenScoutHelper
+        INFOPLIST_FILE: App/OpenScoutHelper/Info.plist
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        SKIP_INSTALL: YES
+
+schemes:
+  OpenScout:
+    build:
+      targets:
+        OpenScout: all
+        OpenScoutHelper: all

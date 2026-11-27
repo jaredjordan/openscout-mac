@@ -25,7 +25,9 @@ Fixes from an independent security review of alpha.1.
 - Files that vanish or can't be read mid-scan are listed as skipped, not engine failures, so routine Downloads churn doesn't break protection status.
 - File names containing a newline are scanned on their own, so they can't forge results for neighboring files.
 - A clean download no longer clears a failed scan's warning.
-- The definitions check against installed apps no longer blocks updates because one file couldn't be read.
+- The definitions check against installed apps no longer blocks updates because one file couldn't be read, but a definitions set that fails to load is never installed.
+- A file in Downloads that can't be read or fully scanned becomes a finding to review instead of passing quietly.
+- A stopped scan no longer clears an earlier scan's warning.
 - clamscan must pass a version self-test to count as working.
 - Quarantining a startup item stops its job only when the loaded job really comes from that file, and never touches OpenScout's own helper.
 - freshclam keeps its own folder so it downloads daily diffs, and manual updates respect ClamAV's once-an-hour limit.

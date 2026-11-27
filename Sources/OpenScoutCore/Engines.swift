@@ -281,6 +281,20 @@ public enum FindingBuilder {
             foundAt: now)
     }
 
+    /// A file in a watched folder that couldn't be read or fully scanned. Shown for review
+    /// rather than passed as clean, since unreadable payloads are a way to hide.
+    public static func finding(forUnscannable path: String, now: Date = Date()) -> Finding {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        return Finding(
+            title: "Couldn't scan \(name)",
+            summary: "OpenScout couldn't read all of \(name), so it hasn't been checked.",
+            recommendation: "Recommended: Review it. Delete it yourself if you don't recognize it, or quarantine it.",
+            severity: .low,
+            evidence: Evidence(path: path, engine: .clamAV, ruleID: "OS-SCAN-0001",
+                               matchDetail: "Unreadable or over the size limit"),
+            foundAt: now)
+    }
+
     public static func finding(forNewStartupItem item: StartupItem, signature: SignatureInfo?,
                                now: Date = Date()) -> Finding {
         let unsigned = signature?.isSigned == false

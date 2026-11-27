@@ -70,6 +70,13 @@ final class StartupItemTests: XCTestCase {
         XCTAssertTrue(finding.recommendation.hasPrefix("Recommended: Quarantine"))
     }
 
+    func testUnscannableFileBecomesAReviewFinding() {
+        let finding = FindingBuilder.finding(forUnscannable: "/Users/me/Downloads/locked.pkg")
+        XCTAssertEqual(finding.evidence.ruleID, "OS-SCAN-0001")
+        XCTAssertEqual(finding.title, "Couldn't scan locked.pkg")
+        XCTAssertTrue(finding.recommendation.contains("Review"))
+    }
+
     func testSignedNormalItemIsLowAndRecommendsReview() {
         let item = StartupItem(plistPath: "/Library/LaunchAgents/com.dropbox.plist", label: "com.dropbox.agent",
                                program: "/Applications/Dropbox.app/Contents/MacOS/Dropbox", arguments: [],

@@ -145,8 +145,10 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
                 store.log("\(URL(fileURLWithPath: file).lastPathComponent) in Downloads, clean")
             }
         }
+        // A file OpenScout couldn't read or fully scan in Downloads is itself worth a look:
+        // malware can hide by making its payload unreadable until it runs.
         for file in report.skipped {
-            store.log("\(URL(fileURLWithPath: file).lastPathComponent) is too large to scan fully")
+            record(FindingBuilder.finding(forUnscannable: file))
         }
     }
 
@@ -197,7 +199,8 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
         let name = kind == .quick ? "Quick scan" : "Full scan"
         let uniqueProblems = Array(Set(problems)).sorted()
         store.update { state in
-            state.lastScanProblems = uniqueProblems
+            // A stopped scan proves nothing, so it never clears an earlier failure.
+            if !cancelled { state.lastScanProblems = uniqueProblems }
             // A scan only counts as done when every engine ran. Otherwise it runs again.
             if !cancelled && uniqueProblems.isEmpty {
                 if kind == .quick { state.lastQuickScan = Date() } else { state.lastFullScan = Date() }
@@ -289,11 +292,12 @@ final class HelperService: NSObject, OpenScoutHelperProtocol, @unchecked Sendabl
             try definitions.install(manifest: DefinitionManifest(source: "clamav", version: version, files: files),
                                     from: download, currentlyFlagged: currentlyFlagged) { staged in
                 // Scan inside every app bundle with the candidate set. Anything new it flags holds the update.
-                // Unreadable files in an app don't block the update. Only new detections do.
+                // Unreadable files are already split out as skipped, so any error left means the
+                // candidate set itself is broken (for example a malformed database). Never install it.
                 let check = ClamAVEngine(clamscanPath: clamscan, databaseDirectory: staged.path, timeout: 3600)
                     .scan(paths: corpus, recursive: true)
                 if !check.errors.isEmpty {
-                    self.store.log("Definitions check against installed apps had \(check.errors.count) problems")
+                    throw EngineError.failed(tool: "clamscan", exitCode: 2, stderr: check.errors.joined(separator: "; "))
                 }
                 return Set(check.matches.map(\.path))
             }

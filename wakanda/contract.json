@@ -1,0 +1,20 @@
+{
+  "status": "draft, not installed. Wakanda's W'Kabi installer has not run in this repo.",
+  "stack_profile": "macos-app",
+  "stack_sentence": "a native macOS menu bar app with a background launch agent that reads the file system, quarantines files and talks over XPC; code signing, entitlements, file permissions, symlink handling and anything that runs an external tool are in scope",
+  "min_passing_tests": 40,
+  "max_todo_count": 0,
+  "max_vulnerabilities": 0,
+  "behavior_paths": ["Sources/", "App/", "project.yml", "Package.swift"],
+  "test_command": "swift test",
+  "build_command": "xcodegen generate && xcodebuild -project OpenScout.xcodeproj -scheme OpenScout -configuration Debug CODE_SIGNING_ALLOWED=NO build",
+  "gates": ["inventory", "build", "tests", "audit", "secrets", "static", "hostile", "changelog"],
+  "stack_assertions": {
+    "core_builds_on_linux": true,
+    "no_shell_execution": true,
+    "launch_agent_plist_lints": true
+  },
+  "coverage_command": null,
+  "coverage": "not_measured_yet",
+  "reviewer_model": "opus"
+}

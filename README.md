@@ -6,7 +6,7 @@ OpenScout is free, with no paid tier, trial, account, ads or telemetry. Every ch
 
 ## Status
 
-Version 0.1 is in development. See the open [issues](https://github.com/jaredjordan/openscout-mac/issues) and the milestones v1, v2 and v3. Live blocking waits on Apple's Endpoint Security approval.
+Current version: 0.1.0-alpha.1 (pre-beta). Every iteration gets a new version, a CHANGELOG.md entry and a git tag. See [docs/decisions/0004-versioning.md](docs/decisions/0004-versioning.md). Version 0.1 is in development. See the open [issues](https://github.com/jaredjordan/openscout-mac/issues) and the milestones v1, v2 and v3. Live blocking waits on Apple's Endpoint Security approval.
 
 ## How it's built
 

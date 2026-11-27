@@ -4,6 +4,10 @@ Every change to OpenScout is listed here, including detections that were added o
 
 ## [Unreleased]
 
+## [0.1.0-alpha.1] - 2026-11-27
+
+First tagged pre-beta iteration. The repository stays private until the beta.
+
 ### Added
 - Startup item watcher: reads LaunchAgents and LaunchDaemons, notices new and changed items within seconds, and checks who signed the program they run.
 - Downloads watcher that scans new files once the browser finishes writing them.

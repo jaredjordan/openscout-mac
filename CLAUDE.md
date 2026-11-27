@@ -12,6 +12,7 @@ Rules for agents working in this repo:
 - Full Disk Access unknown is not denied, but denied always shows "Not fully protected".
 - Core logic goes in `Sources/OpenScoutCore` with tests in `tests/`. It must build on Linux.
 - ClamAV (GPLv2) is never linked. It runs as a separate process.
+- Version every iteration. Each change you ship bumps the version in `VERSION`, moves its notes from `[Unreleased]` into a new dated CHANGELOG.md release, increments `CURRENT_PROJECT_VERSION` in `project.yml`, and gets a `v<version>` git tag on the default branch after merge. Before beta: `0.1.0-alpha.N`, raising N by one each time. Rules in docs/decisions/0004-versioning.md.
 - Conventional commits. Reference the GitHub issue in the commit body.
 - No secrets in the repo. Signing identities stay in the keychain and CI secrets.
 - UI copy: plain English, no jargon. Allow is always a two-step action.

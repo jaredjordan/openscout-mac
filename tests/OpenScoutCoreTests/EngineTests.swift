@@ -39,7 +39,8 @@ final class EngineTests: XCTestCase {
         runner.results["/c"] = CommandResult(exitCode: 2, stdout: "/a: Bad FOUND\n", stderr: "/b: Access denied")
         let result = ClamAVEngine(clamscanPath: "/c", databaseDirectory: "/db", runner: runner).scan(paths: ["/a", "/b"])
         XCTAssertEqual(result.matches.map(\.path), ["/a"], "detections survive an error elsewhere in the batch")
-        XCTAssertEqual(result.errors.count, 1)
+        XCTAssertEqual(result.skipped, ["/b"], "an unreadable file is listed as skipped")
+        XCTAssertTrue(result.errors.isEmpty)
     }
 
     func testClamAVIgnoresPathsThatWereNotScanned() {

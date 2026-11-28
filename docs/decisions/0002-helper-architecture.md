@@ -20,7 +20,7 @@ Version 1 detects within seconds but can't block a process before it runs. That 
 
 The helper runs as the user. Anything else running as that same user can already read and write the helper's files in `~/Library/Application Support/OpenScout`: the allow list, state, quarantine records and definitions. It can also replace a Homebrew-installed `clamscan`, because on Intel Macs `/usr/local/bin` is writable by the user. Malware that already runs as you can therefore blind OpenScout without touching XPC.
 
-Version 1 accepts this limit, as most user-level scanners do, and does three things about it:
+Version 0.1 accepts this limit, as most user-level scanners do. The project owner signed off on 2026-11-27: same-user tampering is out of scope for 0.1 and stays open in #40. OpenScout does three things about it:
 
 - Release builds refuse XPC connections unless the caller is signed by OpenScout's team. A build with no team ID refuses everything.
 - An engine that's missing, fails its `clamscan --version` self-test, or fails during a scan makes the mark read "Not fully protected". A replaced `clamscan` that imitates ClamAV's output can still pass, which is why this is a mitigation, not a fix.

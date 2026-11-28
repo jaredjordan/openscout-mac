@@ -18,7 +18,7 @@ You'll get an acknowledgement within 72 hours. Fixes ship in the next weekly rel
 
 ## Out of scope for 0.1
 
-Software already running under your own account can modify OpenScout's files in `~/Library/Application Support/OpenScout` or replace the Homebrew-installed scan engines. Reports of that class are known and tracked in #40, and won't be treated as new vulnerabilities until a root-owned component ships. Bypasses that need no prior code execution as you are in scope.
+Software already running under your own account can modify OpenScout's files in `~/Library/Application Support/OpenScout` or replace the Homebrew-installed scan engines. Reports of that class are known and tracked in #40, and won't be treated as new vulnerabilities until a root-owned component ships. The project owner accepted this for 0.1 on 2026-11-27. Bypasses that need no prior code execution as you are in scope.
 
 ## Supported versions
 
